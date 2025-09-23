@@ -1,4 +1,4 @@
 # Ignore these files
 
 .env
-/venv
+*/venv
