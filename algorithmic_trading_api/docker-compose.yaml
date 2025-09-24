@@ -1,0 +1,42 @@
+# Note: The 'version' attribute is obsolete in modern Docker Compose and can be removed.
+version: '3.8'
+
+# [cite_start]Define the services (containers) that make up the application. [cite: 46]
+services:
+  # [cite_start]The PostgreSQL database service. [cite: 13, 44]
+  db:
+    image: postgres:15-alpine
+    container_name: database
+    # Map port 5432 on the host to port 5432 in the container.
+    ports:
+      - "5432:5432"
+    # Set environment variables for the database configuration.
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=root
+      - POSTGRES_DB=database
+    # Persist database data on the host machine using a named volume.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+
+  # [cite_start]The FastAPI application service. [cite: 41]
+  app:
+    # Build the Docker image from the Dockerfile in the current directory.
+    build: .
+    container_name: trading_api
+    # Map port 8000 on the host to port 8000 in the container.
+    ports:
+      - "8000:8000"
+    # [cite_start]Load environment variables from a .env file. [cite: 47]
+    env_file:
+      - .env
+    # Ensure the 'db' service is started and healthy before this service starts.
+    depends_on:
+      - db
+    # Mount the local source code directory into the container for live-reloading during development.
+    volumes:
+      - ./trading_api:/app/trading_api
+
+# Declare the named volume for persistent database storage.
+volumes:
+  postgres_data:
