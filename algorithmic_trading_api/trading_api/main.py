@@ -1,15 +1,20 @@
-# trading_api/main.py
+# Python and Library Imports
 from fastapi import FastAPI
+from trading_api.database.session import engine, Base
+from trading_api.modules.data_sourcing.router import router as data_sourcing_router
 
-# Esta é a linha crucial que estava faltando ou tinha um nome diferente
+# Create App Instance
 app = FastAPI(
     title="Algorithmic Trading API",
-    description="API para backtests de estratégias de trading.",
-    version="0.1.0"
+    description="An API for backtesting and analyzing trading strategies.",
+    version="1.0.0"
 )
 
-# Exemplo de endpoint
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the Algorithmic Trading API"}
+# Include Routers
+app.include_router(data_sourcing_router, prefix="/data-sourcing", tags=["Data Sourcing"])
 
+# Create Database Tables on startup (development only)
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
+    

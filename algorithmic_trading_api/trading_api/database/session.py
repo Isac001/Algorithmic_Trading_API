@@ -1,7 +1,7 @@
 # Python and Library Imports
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from ..core.config import settings
+from trading_api.core.config import settings
 from sqlalchemy.orm import sessionmaker
 
 # Set Database Engine
