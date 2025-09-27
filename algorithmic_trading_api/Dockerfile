@@ -1,4 +1,4 @@
-# [cite_start]Use an official lightweight Python image as a parent image. [cite: 40]
+# Use an official lightweight Python image as a parent image.
 FROM python:3.11-slim
 
 # Update system packages to patch security vulnerabilities.
@@ -15,10 +15,12 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt.
 RUN pip install --no-cache-dir -r requirements.txt
 
+# CORREÇÃO: Copia o ficheiro de configuração do Alembic para a raiz do WORKDIR (/app).
+COPY alembic.ini .
+
 # Copy the application source code into the container at /app/trading_api.
 COPY ./trading_api /app/trading_api
 
 # Command to run the Uvicorn server when the container launches.
-# It serves the FastAPI application found in trading_api/main.py.
-# --host 0.0.0.0 makes the server accessible from outside the container.
+# Este CMD será sobrescrito pelo comando definido no docker-compose.yaml.
 CMD ["uvicorn", "trading_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
