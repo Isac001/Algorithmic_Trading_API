@@ -1,6 +1,5 @@
-# [cite_start]Define the services (containers) that make up the application. [cite: 46]
 services:
-  # [cite_start]The PostgreSQL database service. [cite: 13, 44]
+  # O PostgreSQL database service.
   db:
     # Use the official PostgreSQL image.
     image: postgres:15-alpine
@@ -21,8 +20,15 @@ services:
     # Persist database data on the host machine using a named volume.
     volumes:
       - postgres_data:/var/lib/postgresql/data/
+      
+    # CORREÇÃO CRÍTICA: Adiciona o healthcheck para saber quando o DB está pronto
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d database"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # [cite_start]The FastAPI application service. [cite: 41]
+  # The FastAPI application service.
   app:
     # Build the Docker image from the Dockerfile in the current directory.
     build: .
@@ -34,13 +40,19 @@ services:
     ports:
       - "8000:8000"
 
-    # [cite_start]Load environment variables from a .env file. [cite: 47]
+    # Load environment variables from a .env file.
     env_file:
       - .env
 
-    # Ensure the 'db' service is started and healthy before this service starts.
+    # CORREÇÃO CRÍTICA: Espera até que o 'db' esteja saudável antes de iniciar
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+        
+    # Comando (Mantido: Alembic upgrade head é executado no início)
+    command: >
+      /bin/sh -c "alembic upgrade head &&
+      uvicorn trading_api.main:app --host 0.0.0.0 --port 8000"
       
     # Mount the local source code directory into the container for live-reloading during development.
     volumes:

@@ -30,9 +30,8 @@ class Backtest(Base):
     daily_positions = relationship("DailyPosition", back_populates="backtest")
     metrics = relationship("Metric", uselist=False, back_populates="backtest")  
 
-# Trade Table
+# Trade Table (Revisão Final de Estabilidade)
 class Trade(Base):
-
     """Represents a single trade (buy or sell) executed during a backtest."""
 
     __tablename__ = 'trades'
@@ -40,15 +39,16 @@ class Trade(Base):
     # Columns
     id = Column(Integer, primary_key=True, index=True)
     backtest_id = Column(Integer, ForeignKey('backtests.id'), nullable=False)
-    date = Column(DateTime(timezone=True), nullable=False)
+    date = Column(DateTime(), nullable=False) 
     side = Column(String, nullable=False)  
-    price = Column(Float, nullable=False)
+    price = Column(Float, nullable=True)     
     size = Column(Float, nullable=False)
-    commission = Column(Float, nullable=False)
-    pnl = Column(Float, nullable=False) 
+    commission = Column(Float, nullable=True) 
+    pnl = Column(Float, nullable=True)       
 
     # Relationship
     backtest = relationship("Backtest", back_populates="trades")
+
 
 # Daily Position Table
 class DailyPosition(Base):
