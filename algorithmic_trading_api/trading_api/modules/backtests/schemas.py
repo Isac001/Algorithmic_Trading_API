@@ -22,17 +22,17 @@ class BacktestRunRequest(BaseModel):
     timeframe: str = Field(default="1d", description="Data frequency (e.g., '1d' for daily, '1h' for hourly).")
     
 class BacktestRunResponse(BaseModel):
-    """Schema for the initial response after triggering a backtest."""
+    """Schema for the initial response after triggering a backtest (Requirement 17)."""
     
     backtest_id: int = Field(..., description="Unique identifier for the initiated backtest.")
     status: str = Field(..., description="Current status (expected: 'PENDING').")
 
+
 # =======================================================
 # 2. Detailed Result Schemas (GET /backtests/{id}/results)
 # =======================================================
-
 class MetricSchema(BaseModel):
-    """Consolidated performance metrics."""
+    """Consolidated performance metrics (Requirement 56)."""
     total_return: Optional[float] = None
     sharpe: Optional[float] = None
     win_rate: Optional[float] = None
@@ -42,7 +42,7 @@ class MetricSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True) 
 
 class TradeSchema(BaseModel):
-    """Represents a single closed trade executed during the backtest."""
+    """Represents a single closed trade executed during the backtest (Requirement 54)."""
     date: datetime = Field(..., description="Date and time the trade was closed.")
     side: str = Field(..., description="Operation side (e.g., 'BUY' or 'SELL').")
     price: float
@@ -53,7 +53,7 @@ class TradeSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True) 
 
 class DailyPositionSchema(BaseModel):
-    """Portfolio state at the end of a trading day (Equity Curve data)."""
+    """Portfolio state at the end of a trading day (Equity Curve data - Requirement 55)."""
     date: date
     position_size: float = Field(..., description="Current size of the asset position.")
     cash: float = Field(..., description="Available cash balance.")
@@ -62,7 +62,7 @@ class DailyPositionSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True) 
 
 class BacktestResultResponse(BaseModel):
-    """Main response schema for detailed backtest results."""
+    """Main response schema for detailed backtest results (Requirement 18)."""
     backtest_id: int
     status: str
     ticker: str
@@ -73,11 +73,13 @@ class BacktestResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True) 
 
 # =======================================================
-# 3. Listing Schemas (GET /backtests)
+# 3. Listing Schemas (GET / Detailed Result)
 # =======================================================
 
 class BacktestListItem(BaseModel):
-    """Schema for an individual item in the list of backtests."""
+
+    """Schema for an individual item in the list of backtests (Requirement 19)."""
+
     id: int
     created_at: datetime
     ticker: str
@@ -89,8 +91,14 @@ class BacktestListItem(BaseModel):
 
     model_config = ConfigDict(from_attributes=True) 
 
+
+# =======================================================
+# 3. Listing Schemas (GET / Listing)
+# =======================================================
 class BacktestListResponse(BaseModel):
-    """Schema for the paginated response of the backtest list endpoint."""
+
+    """Schema for the paginated response of the backtest list endpoint (Requirement 19)."""
+
     total: int = Field(..., description="Total number of backtests found across all pages.")
     page: int = Field(..., description="Current page number.")
     size: int = Field(..., description="Page size used.")

@@ -1,9 +1,7 @@
-# trading_api/modules/backtests/services.py
-
 # Python and Library Imports
 import backtrader as bt
 from datetime import datetime, date, timezone
-from sqlalchemy.orm import Session, joinedload # joinedload for eager loading in listing
+from sqlalchemy.orm import Session, joinedload 
 from sqlalchemy.exc import SQLAlchemyError 
 import pandas as pd
 import logging
@@ -18,7 +16,7 @@ from trading_api.database.models.backtest import Backtest, Trade, DailyPosition,
 from trading_api.strategies.sma_cross import SMACross 
 from trading_api.database.session import SessionLocal 
 from trading_api.modules.backtests.schemas import (
-    MetricSchema, TradeSchema, DailyPositionSchema, BacktestListItem # Output and listing schemas
+    MetricSchema, TradeSchema, DailyPositionSchema, BacktestListItem 
 )
 
 
@@ -67,25 +65,31 @@ class BacktestingService:
     # BACKGROUND JOB EXECUTION
     # =========================================================
     def execute_backtest_job_safe(self, backtest_id: int):
+
         """
         Safe wrapper for background task execution. 
         It creates a new database session and handles exceptions safely.
         """
+
         logger.debug(f"[{backtest_id}] Safe job wrapper started. Creating new DB session.")
+
         # Crucial: Create a new session for the background thread/task
         db_job = SessionLocal()
         try:
             self.execute_backtest_job(backtest_id, db_job)
+
         except Exception as e:
+
             # Catch all exceptions to log them and prevent the background task from crashing silently
             logger.error(f"[{backtest_id}] Unhandled exception in safe wrapper: {e}", exc_info=True)
             db_job.rollback() 
+
         finally:
             logger.debug(f"[{backtest_id}] Closing job DB session.")
             db_job.close()
 
-
     def execute_backtest_job(self, backtest_id: int, db: Session):
+
         """
         Executes the actual backtest logic using Backtrader and persists results.
         This runs in a background task with its own database session.
@@ -93,23 +97,43 @@ class BacktestingService:
         backtest_record = None
         
         try:
+
             logger.debug(f"[{backtest_id}] Backtest execution started.")
+
             # Retrieve the backtest record from the database
             backtest_record = db.query(Backtest).filter(Backtest.id == backtest_id).first()
             
+            # Check if the backtest record exists
+            if not backtest_record:
+
+                logger.error(f"[{backtest_id}] Backtest record not found in database.")
+                return  
+
             # 1. Update status to RUNNING
             backtest_record.status = "RUNNING"
             db.commit()
             logger.debug(f"[{backtest_id}] Status updated to RUNNING in DB.")
 
-            # 2. Get data from the database
+            # 2. Get data from the database with improved error handling
             backtest_params = {
                 "ticker": backtest_record.ticker,
                 "start_date": backtest_record.start_date,
                 "end_date": backtest_record.end_date,
             }
-            data_feed = self._get_data_from_db(backtest_params, db)
             
+            try:
+                data_feed = self._get_data_from_db(backtest_params, db)
+
+            except ValueError as e:
+
+                # Data validation error
+                logger.error(f"[{backtest_id}] Data validation error: {e}")
+                backtest_record.status = "FAILED"
+                backtest_record.error_message = str(e)
+                db.commit()
+
+                return  # Sai da função sem executar o backtest
+
             # 3. Backtrader Configuration and Execution
             cerebro = bt.Cerebro()
             cerebro.adddata(data_feed)
@@ -133,6 +157,7 @@ class BacktestingService:
             
             # 5. Finalization: Update status to COMPLETED
             backtest_record.status = "COMPLETED"
+            backtest_record.error_message = None  # Limpa mensagem de erro em caso de sucesso
             db.add(backtest_record) 
             
             logger.debug(f"[{backtest_id}] Attempting final COMMIT of all data.")
@@ -147,11 +172,19 @@ class BacktestingService:
             
             # Attempt to save the FAILED status, even after a rollback
             if backtest_record: 
+
                 try:
+
                     backtest_record.status = "FAILED"
+                    error_msg = str(e)
+
+                    if len(error_msg) > 500:  
+                        error_msg = error_msg[:500] + "..."
+                    backtest_record.error_message = error_msg
                     db.add(backtest_record) 
                     db.commit()
                     logger.debug(f"[{backtest_id}] Failure status (FAILED) saved successfully.")
+
                 except Exception as save_err:
                     logger.error(f"[{backtest_id}] Failed to save FAILED status: {save_err}", exc_info=True)
             
@@ -162,11 +195,14 @@ class BacktestingService:
     # HELPER METHODS (Data & Persistence)
     # ---------------------------------------------------------
     def _get_data_from_db(self, backtest_params: Dict[str, Any], db: Session):
-        """Fetches price data from the 'prices' table and formats it for Backtrader (PandasData)."""
-        symbol_record = db.query(Symbol).filter(Symbol.ticker == backtest_params["ticker"]).first()
+        """Fetches price data from the 'prices' table with improved error handling."""
+        ticker = backtest_params["ticker"]
+        
+        # Verifica se o símbolo existe
+        symbol_record = db.query(Symbol).filter(Symbol.ticker == ticker).first()
         if not symbol_record:
-            # Use ValueError as this is a backend failure, which execute_backtest_job handles
-            raise ValueError(f"Ticker '{backtest_params['ticker']}' not found in the Symbol table.")
+            raise ValueError(f"Ticker '{ticker}' não encontrado na base de dados. "
+                           f"Verifique se o ticker está correto e se os dados foram importados.")
         
         # Build the query for price data within the specified date range
         query = db.query(Price).filter(
@@ -175,8 +211,26 @@ class BacktestingService:
             Price.date <= backtest_params["end_date"]
         ).order_by(Price.date)
         
+        # Verifica se existem dados para o período
+        exists = db.query(query.exists()).scalar()
+        if not exists:
+            raise ValueError(f"Nenhum dado de preço encontrado para o ticker '{ticker}' "
+                           f"no período de {backtest_params['start_date']} a {backtest_params['end_date']}.")
+        
         # Read the SQL results directly into a Pandas DataFrame
         df = pd.read_sql(query.statement, db.bind)
+        
+        if df.empty:
+            raise ValueError(f"Dados de preço vazios para o ticker '{ticker}' "
+                           f"no período especificado.")
+        
+        # Check for missing columns
+        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Dados incompletos para o ticker '{ticker}'. "
+                           f"Colunas faltantes: {missing_columns}")
+        
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
         
@@ -251,17 +305,18 @@ class BacktestingService:
                 trades_list.append(trade)
 
             except (KeyError, TypeError, AttributeError) as e:
+
                 logger.warning(f"[{backtest_id}] Trade {trade_num} skipped: Error processing trade data: {e}")
+
             except Exception as e:
                 logger.error(f"[{backtest_id}] Unknown failure while processing Trade {trade_num}: {e}", exc_info=True)
-
 
         db.add_all(trades_list)
         logger.debug(f"[{backtest_id}] {len(trades_list)} Trades added to session via add_all.")
 
-
         # --- 3. Daily Position Persistence (daily_positions table) ---
         daily_positions_list = []
+
         # Assumes the strategy class stores daily equity data in an attribute named 'daily_position_data'
         daily_data_from_strategy = getattr(strategy_instance, 'daily_position_data', [])
         
@@ -280,9 +335,8 @@ class BacktestingService:
         db.add_all(daily_positions_list)
         logger.debug(f"[{backtest_id}] {len(daily_positions_list)} Daily Positions added to session.")
 
-
     # =========================================================
-    # GET RESULTS (Requirement 18)
+    # GET RESULTS (Requirement 18) - ATUALIZADO
     # =========================================================
     def get_backtest_results(self, backtest_id: int, db: Session) -> Dict[str, Any]:
         """
@@ -296,6 +350,18 @@ class BacktestingService:
             # Raise 404 Not Found if the record doesn't exist
             raise HTTPException(status_code=404, detail=f"Backtest ID {backtest_id} not found.")
 
+        if backtest.status == "FAILED":
+            # Retorna informações de erro de forma amigável
+            error_detail = backtest.error_message or "Erro desconhecido durante a execução do backtest"
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Backtest ID {backtest_id} falhou.",
+                    "error": error_detail,
+                    "suggestion": "Verifique se o ticker existe e se há dados para o período especificado."
+                }
+            )
+        
         if backtest.status != "COMPLETED":
             # Raise 409 Conflict if results are not final
             raise HTTPException(
@@ -304,14 +370,11 @@ class BacktestingService:
             )
             
         # 2. Load Related Data (Metrics, Trades, and Positions)
-        # Note: If relationships were defined with lazy='joined', a single query would suffice.
-        # Here we perform explicit queries.
         metrics = db.query(Metric).filter(Metric.backtest_id == backtest_id).first()
         trades = db.query(Trade).filter(Trade.backtest_id == backtest_id).all()
         daily_positions = db.query(DailyPosition).filter(DailyPosition.backtest_id == backtest_id).all()
         
         # 3. Format results using Pydantic models for safe serialization
-        # Use .model_validate() to create the Pydantic instance from the ORM object
         return {
             "backtest_id": backtest.id,
             "status": backtest.status,
@@ -322,7 +385,36 @@ class BacktestingService:
         }
 
     # =========================================================
-    # LIST BACKTESTS (Requirement 19)
+    # GET BACKTEST STATUS (NOVO MÉTODO)
+    # =========================================================
+    def get_backtest_status(self, backtest_id: int, db: Session) -> Dict[str, Any]:
+        """
+        Retorna o status do backtest de forma amigável, incluindo mensagens de erro se houver.
+        """
+        backtest = db.query(Backtest).filter(Backtest.id == backtest_id).first()
+        
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Backtest não encontrado")
+        
+        response = {
+            "backtest_id": backtest_id,
+            "status": backtest.status,
+            "ticker": backtest.ticker,
+            "start_date": backtest.start_date,
+            "end_date": backtest.end_date
+        }
+        
+        if backtest.status == "FAILED" and backtest.error_message:
+            response.update({
+                "error": backtest.error_message,
+                "message": "O backtest falhou devido a um erro nos dados ou parâmetros",
+                "suggestion": "Verifique se o ticker existe, se há dados para o período e se os parâmetros estão corretos."
+            })
+        
+        return response
+
+    # =========================================================
+    # LIST BACKTESTS (Requirement 19) - ATUALIZADO
     # =========================================================
     def list_backtests(
         self,
@@ -364,14 +456,16 @@ class BacktestingService:
             # Validate the core fields against the schema
             item_data = BacktestListItem.model_validate(backtest).model_dump()
             
+            # If the backtest is failed, include the error message
+            if backtest.status == "FAILED" and backtest.error_message:
+                item_data['error_message'] = backtest.error_message
+            
             # Explicitly include the total_return from the eager-loaded Metric object
             if backtest.metrics and backtest.metrics.total_return is not None:
                 item_data['total_return'] = backtest.metrics.total_return
             else:
                  item_data['total_return'] = None
 
-            # created_at is included automatically by .model_validate if it's in the schema
-            
             items.append(item_data)
         
         # Return the final paginated response structure
