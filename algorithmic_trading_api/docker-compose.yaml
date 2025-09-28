@@ -1,60 +1,90 @@
+# Service definitions for Docker Compose
 services:
-  # O PostgreSQL database service.
+  # 1. PostgreSQL Database Service
   db:
-    # Use the official PostgreSQL image.
     image: postgres:15-alpine
-
-    # Database a name.
     container_name: database
-
-    # Map port 5432 on the host to port 5432 in the container.
     ports:
       - "5432:5432"
 
-    # Set environment variables for the database configuration.
+    # Database Configuration (Credentials match SQLAlchemy setup)
     environment:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=root
       - POSTGRES_DB=database
 
-    # Persist database data on the host machine using a named volume.
+    # Persist database data using a named volume.
     volumes:
       - postgres_data:/var/lib/postgresql/data/
       
-    # CORREÇÃO CRÍTICA: Adiciona o healthcheck para saber quando o DB está pronto
+    # Healthcheck to prevent race conditions (app/worker starts only when DB is ready).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d database"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # The FastAPI application service.
+  # 2. FastAPI Application Service (API Front-end)
   app:
-    # Build the Docker image from the Dockerfile in the current directory.
+    # Builds the image from the Dockerfile in the current directory.
     build: .
-
-    # Container Name.
     container_name: trading_api
-
-    # Map port 8000 on the host to port 8000 in the container.
+    # Defines the image name for the build result.
+    image: ${COMPOSE_PROJECT_NAME:-trading_api}_app
     ports:
       - "8000:8000"
-
-    # Load environment variables from a .env file.
+    # Loads environment variables (e.g., database credentials for Alembic/FastAPI).
     env_file:
       - .env
+      
+    # CRITICAL: Sets Python path for internal package imports (e.g., trading_api.*).
+    environment:
+      - PYTHONPATH=/app
 
-    # CORREÇÃO CRÍTICA: Espera até que o 'db' esteja saudável antes de iniciar
+    # Waits until 'db' is healthy before starting.
     depends_on:
       db:
         condition: service_healthy
         
-    # Comando (Mantido: Alembic upgrade head é executado no início)
+    # Command: Runs Alembic migrations first, then starts Uvicorn.
     command: >
       /bin/sh -c "alembic upgrade head &&
       uvicorn trading_api.main:app --host 0.0.0.0 --port 8000"
       
-    # Mount the local source code directory into the container for live-reloading during development.
+    # Mounts local code for development (live-reloading).
+    volumes:
+      - ./trading_api:/app/trading_api
+
+  # 3. Daily Worker Service (Cron Job Simulation - Requirement 59)
+  daily_worker:
+    # Uses the same image built by the 'app' service for consistency.
+    image: ${COMPOSE_PROJECT_NAME:-trading_api}_app
+    container_name: daily_indicator_worker
+    
+    # CRITICAL: Must wait for the DB to be ready.
+    depends_on:
+      db:
+        condition: service_healthy
+        
+    # CRITICAL: Sets Python path for internal imports (e.g., trading_api.modules).
+    environment:
+      - PYTHONPATH=/app
+      
+    # Loads environment variables.
+    env_file:
+      - .env
+
+    # Command: Runs the worker script in a perpetual loop (simulating a cron job).
+    # The 'sleep 86400' simulates a 24-hour interval.
+    command: >
+      /bin/sh -c "while true; do 
+        echo '--- Running Daily Ingestion Job ---';
+        python /app/trading_api/modules/data_sourcing/worker.py; 
+        echo '--- Daily Ingestion Job Finished ---';
+        sleep 86400; 
+      done"
+      
+    # Mounts code volume to access project files like worker.py.
     volumes:
       - ./trading_api:/app/trading_api
 
