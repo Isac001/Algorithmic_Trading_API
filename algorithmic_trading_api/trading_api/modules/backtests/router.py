@@ -8,8 +8,7 @@ from .schemas import (
     BacktestRunRequest, 
     BacktestRunResponse, 
     BacktestResultResponse,
-    BacktestListResponse, # Response for paginated backtest listing
-    BacktestListItem      # Individual item model in the list
+    BacktestListResponse, 
 )
 
 from .services import BacktestingService 
