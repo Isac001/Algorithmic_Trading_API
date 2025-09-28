@@ -1,97 +1,79 @@
-# # Python and Library Imports
-# from fastapi import FastAPI
-# from trading_api.database.session import engine, Base
-
-# # Import the router for the Data Sourcing module (existing)
-# from trading_api.modules.data_sourcing.router import router as data_sourcing_router
-
-# # =======================================================
-# # NEW STEP: Import the router for the Backtests module
-# # =======================================================
-# from trading_api.modules.backtests.router import router as backtests_router 
-
-
-# # --- Application Setup ---
-# app = FastAPI(
-#     title="Algorithmic Trading API",
-#     description="An API for backtesting and analyzing trading strategies.",
-#     version="1.0.0"
-# )
-
-# # =======================================================
-# # Include API Routers
-# # =======================================================
-
-# # Include the Data Sourcing router
-# app.include_router(
-#     data_sourcing_router, 
-#     prefix="/data-sourcing", 
-#     tags=["Data Sourcing"]
-# )
-
-# # NEW STEP: Include the Backtests router
-# # The internal router already uses the prefix "/backtests", so we use no prefix here.
-# app.include_router(
-#     backtests_router, 
-#     tags=["Backtests"]
-# )
-
-
-# # --- Database Initialization ---
-# # Create Database Tables on startup (development only)
-# @app.on_event("startup")
-# def on_startup():
-#     """
-#     Creates all database tables defined by SQLAlchemy Base metadata.
-#     This is primarily used for local development environments.
-#     """
-#     # NOTE: Alembic (database migration tool) is typically used for production/staging environments.
-#     Base.metadata.create_all(bind=engine)
-
 # Python and Library Imports
 from fastapi import FastAPI
-from trading_api.database.session import engine, Base
+from fastapi.responses import RedirectResponse
+import logging
 
-# Import the router for the Data Sourcing module (existing)
+# Project Imports
+# 1. Configuration (assuming a Pydantic BaseSettings class)
+from trading_api.core.config import settings 
+
+# 2. Module Routers
+from trading_api.modules.backtests.router import router as backtests_router
 from trading_api.modules.data_sourcing.router import router as data_sourcing_router
+from trading_api.modules.health_check.routers import router as health_router # Health Check Router
 
-# Import the router for the Backtests module
-from trading_api.modules.backtests.router import router as backtests_router 
+# --- Logging Setup ---
+# Configure basic logging for the application using settings from the config file
+logging.basicConfig(level=settings.LOG_LEVEL, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
-# --- Application Setup ---
+# --- FastAPI Application Initialization ---
 app = FastAPI(
-    title="Algorithmic Trading API",
-    description="An API for backtesting and analyzing trading strategies.",
-    version="1.0.0"
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
+    description=settings.DESCRIPTION,
+    # Configure documentation access based on the environment (Requirement 47)
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url=None
 )
 
-# =======================================================
-# Include API Routers
-# =======================================================
 
-# Include the Data Sourcing router
-# This exposes the path: POST /data-sourcing/indicators/update (Requirement 20)
+# --- 1. Root Endpoint ---
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirects clients from the root URL to the OpenAPI documentation page."""
+    return RedirectResponse(url="/docs")
+
+
+# --- 2. Include Routers (Modular Monolith Pattern) ---
+
+# A. BACKTESTS Router
+# Exposes paths like: POST /backtests/run (Requirement 16)
 app.include_router(
-    data_sourcing_router, 
-    prefix="/data-sourcing", 
-    tags=["Data Sourcing"]
+    backtests_router,
+    prefix="/backtests",
+    tags=["Backtests"],
 )
 
-# Include the Backtests router
-# This exposes the paths: POST /backtests/run, GET /backtests, GET /backtests/{id}/results
+# B. DATA SOURCING Router
+# Exposes paths like: POST /data-sourcing/indicators/update (Requirement 20)
 app.include_router(
-    backtests_router, 
-    tags=["Backtests"]
+    data_sourcing_router,
+    prefix="/data-sourcing",
+    tags=["Data Sourcing & Ingestion"],
 )
 
+# C. HEALTH CHECK Router
+# Exposes the path: GET /health (Requirement 21)
+app.include_router(
+    health_router,
+    tags=["Health & Infrastructure"],
+    prefix="", # Placed at the root of the API
+)
 
-# --- Database Initialization ---
+# --- 3. Optional: Lifespan Events (Database Initialization Logic is often placed here) ---
 @app.on_event("startup")
-def on_startup():
-    """
-    Creates all database tables defined by SQLAlchemy Base metadata.
-    This is primarily used for local development environments.
-    (Alembic is generally used for production migrations).
-    """
-    Base.metadata.create_all(bind=engine)
+async def startup_event():
+
+    """Initial tasks to be run when the application starts, including logging start status."""
+
+    logger.info(f"Starting {settings.PROJECT_NAME} API v{settings.VERSION}...")
+    
+
+@app.on_event("shutdown")
+def shutdown_event():
+
+    """Tasks to be run when the application shuts down."""
+    
+    logger.info(f"Shutting down {settings.PROJECT_NAME} API.")
