@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from trading_api.database.models.market_data import Price, Symbol
 from trading_api.database.models.backtest import Backtest, Trade, DailyPosition, Metric
 from trading_api.strategies.sma_cross import SMACross
+from trading_api.strategies.breakout import BreakoutStrategy
 from trading_api.database.session import SessionLocal
 from trading_api.modules.backtests.schemas import (
     MetricSchema, TradeSchema, DailyPositionSchema, BacktestListItem
@@ -24,34 +25,24 @@ logger = logging.getLogger(__name__)
 # Mapping between strategy names and their corresponding Backtrader classes
 STRATEGY_MAPPING = {
     "sma_cross": SMACross,
+    "breakout": BreakoutStrategy,
 }
 
 # Backtesting Service
 class BacktestingService:
 
-    """
-    Service class responsible for managing backtest execution, data persistence, and results retrieval.
-    Handles the complete lifecycle of backtesting operations from creation to results analysis.
-    """
-
-    # Constructor
     def __init__(self, db: Session):
-
         """
         Initialize the backtesting service with database session.
         
         Args:
             db: SQLAlchemy database session for data operations
         """
-
         self.db = db
 
-    # Method to create initial backtest record
     def create_pending_backtest(self, backtest_params: Dict[str, Any]) -> int:
-
         """
         Create initial backtest record in database with PENDING status.
-        This synchronous method ensures immediate return of backtest ID for API response.
         
         Args:
             backtest_params: Dictionary containing backtest configuration parameters
@@ -59,7 +50,7 @@ class BacktestingService:
         Returns:
             int: Unique identifier of the created backtest record
         """
-
+        # Create new backtest record with PENDING status
         backtest_record = Backtest(
             ticker=backtest_params["ticker"],
             start_date=backtest_params["start_date"],
@@ -70,23 +61,22 @@ class BacktestingService:
             commission=backtest_params.get("commission", 0.001),
             status="PENDING"
         )
+        # Persist record to database and return ID
         self.db.add(backtest_record)
         self.db.commit()
         self.db.refresh(backtest_record)
         return backtest_record.id
 
-    # Method to execute backtest in a background task
     def execute_backtest_job_safe(self, backtest_id: int):
-
         """
         Safe execution wrapper for background task processing.
-        Creates isolated database session and ensures proper error handling and resource cleanup.
+        Creates isolated database session and ensures proper error handling.
         
         Args:
             backtest_id: Identifier of the backtest to execute
         """
-
         logger.info(f"[{backtest_id}] Starting safe backtest execution")
+        # Create isolated database session for background job
         db_job = SessionLocal()
         try:
             self.execute_backtest_job(backtest_id, db_job)
@@ -94,20 +84,17 @@ class BacktestingService:
             logger.error(f"[{backtest_id}] Critical error in backtest: {e}", exc_info=True)
             db_job.rollback()
         finally:
+            # Always close database connection
             db_job.close()
 
-    # Method to execute backtest job
     def execute_backtest_job(self, backtest_id: int, db: Session):
-
         """
         Core backtest execution logic using Backtrader framework.
-        Manages complete backtest lifecycle from data loading to results persistence.
         
         Args:
             backtest_id: Identifier of the backtest to execute
             db: Database session for the background job
         """
-
         backtest_record = None
         
         try:
@@ -134,7 +121,7 @@ class BacktestingService:
             # Load historical price data for backtesting
             data_feed = self._get_data_from_db(backtest_params, db)
             
-            # Configure Backtrader cerebro engine with optimized settings
+            # Configure Backtrader cerebro engine
             cerebro = bt.Cerebro()
             cerebro.adddata(data_feed)
             cerebro.broker.setcash(backtest_record.initial_cash)
@@ -144,7 +131,7 @@ class BacktestingService:
             StrategyClass = STRATEGY_MAPPING[backtest_record.strategy_type]
             cerebro.addstrategy(StrategyClass, **backtest_record.strategy_params_json)
             
-            # Add comprehensive performance analyzers for detailed metrics
+            # Add comprehensive performance analyzers
             cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trade_analyzer')
             cerebro.addanalyzer(bt.analyzers.Transactions, _name='transactions')
             cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days)
@@ -153,7 +140,7 @@ class BacktestingService:
             cerebro.addanalyzer(bt.analyzers.VWR, _name='vwr')
             cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
 
-            # Execute backtest with realistic trading simulation settings
+            # Execute backtest with trading simulation settings
             logger.info(f"[{backtest_id}] Executing Backtrader...")
             results = cerebro.run(
                 runonce=False,      # Sequential processing for realistic trade execution
@@ -176,23 +163,19 @@ class BacktestingService:
             logger.error(f"[{backtest_id}] Backtest FAILED: {e}", exc_info=True)
             db.rollback()
             
-            # Update backtest status to failed with error message
+            # Update backtest status to failed without error_message field
             if backtest_record:
                 try:
                     backtest_record.status = "FAILED"
-                    backtest_record.error_message = str(e)[:500]
                     db.commit()
                 except Exception as save_err:
                     logger.error(f"[{backtest_id}] Failed to save error status: {save_err}")
             
             raise e
-        
-    # Method to retrieve historical price data from database
-    def _get_data_from_db(self, backtest_params: Dict[str, Any], db: Session):
 
+    def _get_data_from_db(self, backtest_params: Dict[str, Any], db: Session):
         """
         Retrieve historical price data from database for backtesting period.
-        Validates data availability and prepares it for Backtrader consumption.
         
         Args:
             backtest_params: Dictionary containing ticker and date range parameters
@@ -204,7 +187,6 @@ class BacktestingService:
         Raises:
             ValueError: If ticker not found or no data available for specified period
         """
-
         ticker = backtest_params["ticker"]
         
         # Verify ticker exists in database
@@ -232,19 +214,15 @@ class BacktestingService:
         
         return bt.feeds.PandasData(dataname=df)
 
-    # Method to save comprehensive backtest results to database
     def _save_comprehensive_results(self, strategy_instance, backtest_id: int, db: Session, cerebro=None):
-
         """
         Extract and persist all backtest results including metrics, trades, and positions.
-        Implements multi-layered data validation and error handling.
         
         Args:
             strategy_instance: Backtrader strategy instance with execution results
             backtest_id: Identifier for linking results to backtest record
             db: Database session for persistence operations
         """
-
         try:
             logger.info(f"[{backtest_id}] Starting comprehensive results persistence")
             
@@ -288,12 +266,9 @@ class BacktestingService:
             logger.error(f"[{backtest_id}] Error in results persistence: {e}", exc_info=True)
             raise
 
-    # Method to validate trade data before persistence
     def _validate_trade_data(self, trade_data: Dict) -> bool:
-
         """
         Validate trade data with support for both entry and exit formats.
-        Ensures all required fields are present and contain valid values.
         
         Args:
             trade_data: Dictionary containing trade information
@@ -301,7 +276,6 @@ class BacktestingService:
         Returns:
             bool: True if trade data passes all validation checks
         """
-
         # Check basic required fields
         required_fields = ['size', 'side']
         for field in required_fields:
@@ -327,10 +301,12 @@ class BacktestingService:
         
         return True
 
-    # Method to save trades using multiple capture methods
     def _save_trades_comprehensive(self, strategy_instance, backtest_id: int, db: Session, trade_analyzer) -> int:
         """
         Persist trade records with improved validation and error handling.
+        
+        Returns:
+            int: Number of trades successfully saved
         """
         trades_to_save = []
         
@@ -338,9 +314,10 @@ class BacktestingService:
         strategy_trades = getattr(strategy_instance, 'trades_list', [])
         logger.info(f"[{backtest_id}] Found {len(strategy_trades)} trades in strategy trades_list")
         
-        # Debug logging
+        # Debug logging for troubleshooting
         logger.info(f"[{backtest_id}] DEBUG - Trades list sample: {strategy_trades[:2] if strategy_trades else 'Empty'}")
         
+        # Process each trade from strategy tracking
         for trade_data in strategy_trades:
             try:
                 if self._validate_trade_data(trade_data):
@@ -355,6 +332,7 @@ class BacktestingService:
                         price = trade_data.get('entry_price') 
                         pnl = 0.0
                     
+                    # Create trade record for database
                     trade = Trade(
                         backtest_id=backtest_id,
                         date=trade_date,
@@ -386,43 +364,9 @@ class BacktestingService:
             logger.warning(f"[{backtest_id}] No valid trades found to persist")
             return 0
 
-    def _validate_trade_data(self, trade_data: Dict) -> bool:
-        """
-        Validate trade data with support for both entry and exit formats.
-        """
-        # Check basic required fields
-        required_fields = ['size', 'side']
-        for field in required_fields:
-            if field not in trade_data or trade_data[field] is None:
-                return False
-        
-        # Validate numerical values
-        if trade_data['size'] <= 0:
-            return False
-        
-        # For closed trades, we need exit information
-        if trade_data.get('status') == 'CLOSED':
-            if 'exit_date' not in trade_data or 'exit_price' not in trade_data:
-                return False
-            if trade_data['exit_price'] <= 0:
-                return False
-            if 'entry_price' not in trade_data:
-                return False
-        # For open trades, we need entry information  
-        elif trade_data.get('status') == 'OPEN':
-            if 'entry_date' not in trade_data or 'entry_price' not in trade_data:
-                return False
-            if trade_data['entry_price'] <= 0:
-                return False
-        
-        return True
-
-    # Method to extract trades from Backtrader's TradeAnalyzer
     def _extract_trades_from_analyzer(self, trade_analyzer, backtest_id: int) -> List[Trade]:
-
         """
         Extract trade records from Backtrader's TradeAnalyzer results.
-        Handles different data structure formats returned by the analyzer.
         
         Args:
             trade_analyzer: Backtrader trade analyzer output
@@ -431,20 +375,22 @@ class BacktestingService:
         Returns:
             List[Trade]: List of validated trade objects for persistence
         """
-
         trades = []
         
         try:
+            # Handle different analyzer data structures
             closed_trades = trade_analyzer.get('closed', [])
             if not closed_trades:
                 closed_trades = trade_analyzer  # Handle non-nested analyzer format
                 
+            # Process each trade from analyzer
             for trade_info in closed_trades:
                 try:
                     if isinstance(trade_info, dict):
                         entry = trade_info.get('entry', {})
                         exit_info = trade_info.get('exit', {})
                         
+                        # Only process trades with complete entry and exit data
                         if exit_info and entry:
                             trade = Trade(
                                 backtest_id=backtest_id,
@@ -457,6 +403,7 @@ class BacktestingService:
                             )
                             trades.append(trade)
                 except Exception as e:
+                    # Skip invalid trade entries
                     continue
                     
         except Exception as e:
@@ -464,12 +411,9 @@ class BacktestingService:
             
         return trades
 
-    # Method to reconstruct trades from transaction history
     def _reconstruct_trades_from_transactions(self, transactions_data, backtest_id: int) -> List[Trade]:
-
         """
         Reconstruct trade records from transaction history (complex fallback).
-        Placeholder for advanced trade reconstruction logic if needed.
         
         Args:
             transactions_data: Backtrader transactions analyzer output
@@ -478,16 +422,12 @@ class BacktestingService:
         Returns:
             List[Trade]: Empty list - method requires implementation
         """
-
         trades = []
         return trades
 
-    # Method to persist daily portfolio position snapshots
     def _save_daily_positions(self, strategy_instance, backtest_id: int, db: Session) -> int:
-
         """
         Persist daily portfolio position snapshots for equity curve analysis.
-        Captures portfolio composition and value for each trading day.
         
         Args:
             strategy_instance: Strategy instance containing position data
@@ -497,12 +437,13 @@ class BacktestingService:
         Returns:
             int: Number of daily positions successfully persisted
         """
-
         positions_to_save = []
         
+        # Get daily position data from strategy
         daily_data = getattr(strategy_instance, 'daily_position_data', [])
         logger.info(f"[{backtest_id}] Processing {len(daily_data)} daily positions")
         
+        # Process each daily position snapshot
         for data in daily_data:
             try:
                 position = DailyPosition(
@@ -517,17 +458,15 @@ class BacktestingService:
             except Exception as e:
                 logger.warning(f"[{backtest_id}] Invalid daily position: {e}")
         
+        # Bulk persist positions to database
         if positions_to_save:
             db.add_all(positions_to_save)
             return len(positions_to_save)
         return 0
 
-    # Method to retrieve comprehensive backtest results
     def get_backtest_results(self, backtest_id: int, db: Session) -> Dict[str, Any]:
-
         """
         Retrieve comprehensive results for a completed backtest.
-        Validates backtest status and aggregates all related data.
         
         Args:
             backtest_id: Identifier of the backtest to retrieve
@@ -539,14 +478,16 @@ class BacktestingService:
         Raises:
             HTTPException: If backtest not found, failed, or not completed
         """
-
+        # Retrieve backtest record from database
         backtest = db.query(Backtest).filter(Backtest.id == backtest_id).first()
         
         if not backtest:
             raise HTTPException(status_code=404, detail=f"Backtest ID {backtest_id} not found.")
 
+        # Handle failed backtests with safe error message access
         if backtest.status == "FAILED":
-            error_detail = backtest.error_message or "Unknown error"
+            # Use getattr to safely access error_message field if it exists
+            error_detail = getattr(backtest, 'error_message', None) or "Error during backtest execution"
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -555,6 +496,7 @@ class BacktestingService:
                 }
             )
         
+        # Check if backtest is ready for results retrieval
         if backtest.status != "COMPLETED":
             raise HTTPException(
                 status_code=409, 
@@ -566,6 +508,7 @@ class BacktestingService:
         trades = db.query(Trade).filter(Trade.backtest_id == backtest_id).all()
         daily_positions = db.query(DailyPosition).filter(DailyPosition.backtest_id == backtest_id).all()
         
+        # Return structured results
         return {
             "backtest_id": backtest.id,
             "status": backtest.status,
@@ -575,16 +518,24 @@ class BacktestingService:
             "daily_positions": [DailyPositionSchema.model_validate(d).model_dump() for d in daily_positions],
         }
 
-    # Method to retrieve paginated list of backtests
     def list_backtests(self, db: Session, ticker: Optional[str] = None, 
                   strategy_type: Optional[str] = None, status: Optional[str] = None,
                   page: int = 1, size: int = 10) -> Dict[str, Any]:
-    
         """
         Retrieve paginated list of backtests with filtering options.
-        Includes performance metrics for each backtest in results.
-        """
         
+        Args:
+            db: Database session
+            ticker: Filter by ticker symbol
+            strategy_type: Filter by strategy type
+            status: Filter by backtest status
+            page: Page number for pagination
+            size: Number of items per page
+            
+        Returns:
+            Dict[str, Any]: Paginated results with metadata
+        """
+        # Build base query with metrics relationship
         query = db.query(Backtest).options(joinedload(Backtest.metrics))
 
         # Apply optional filters for targeted results
@@ -608,9 +559,8 @@ class BacktestingService:
         for backtest in backtests:
             item_data = BacktestListItem.model_validate(backtest).model_dump()
             
-            # CORREÇÃO: Remover a verificação de error_message ou usar getattr
+            # Safe error message access for failed backtests
             if backtest.status == "FAILED":
-                # Use getattr para evitar AttributeError se o campo não existir
                 error_msg = getattr(backtest, 'error_message', None)
                 if error_msg:
                     item_data['error_message'] = error_msg
@@ -623,6 +573,7 @@ class BacktestingService:
 
             items.append(item_data)
         
+        # Return paginated response
         return {
             "total": total_count,
             "page": page,

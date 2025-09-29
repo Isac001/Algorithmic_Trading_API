@@ -10,13 +10,13 @@ class BacktestRunRequest(BaseModel):
     """Schema to validate the request for initiating a new backtest simulation."""
     
     # Required Core Parameters
-    ticker: str = Field(..., description="Asset symbol (e.g., PETR4.SA or AAPL).")
+    ticker: str = Field(..., description="Asset symbol (e.g., PETR4.SA or AAPL34.SA).")
     start_date: date = Field(..., description="Start date (YYYY-MM-DD format).")
     end_date: date = Field(..., description="End date (YYYY-MM-DD format).")
-    strategy_type: str = Field(..., description="The type of strategy to run (e.g., 'sma_cross').")
+    strategy_type: str = Field(..., description="The type of strategy to run (e.g., 'sma_cross' or 'breakout').")
     
     # Optional/Default Parameters
-    strategy_params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Dictionary of parameters specific to the strategy.")
+    strategy_params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Dictionary of parameters specific to the strategy (e.g., breakout_period).")
     initial_cash: float = Field(default=100000.0, ge=1.0, description="Starting cash for the simulation.")
     commission: float = Field(default=0.001, ge=0.0, description="Commission per trade (e.g., 0.001 = 0.1%).")
     timeframe: str = Field(default="1d", description="Data frequency (e.g., '1d' for daily, '1h' for hourly).")
@@ -35,10 +35,10 @@ class MetricSchema(BaseModel):
     """Consolidated performance metrics (Requirement 56)."""
     total_return: Optional[float] = None
     sharpe: Optional[float] = None
+    max_drawdown: Optional[float] = Field(None, description="Maximum percentage loss from a peak (Requirement 56, 104).") # Adicionado max_drawdown
     win_rate: Optional[float] = None
     avg_trade_return: Optional[float] = None
     
-    # Configuration to allow mapping from SQLAlchemy models
     model_config = ConfigDict(from_attributes=True) 
 
 class TradeSchema(BaseModel):
@@ -57,7 +57,8 @@ class DailyPositionSchema(BaseModel):
     date: date
     position_size: float = Field(..., description="Current size of the asset position.")
     cash: float = Field(..., description="Available cash balance.")
-    drawdown: float = Field(..., description="Maximum cumulative loss from a peak.")
+    equity: float = Field(..., description="Total portfolio value (Equity Curve).") # Adicionado equity, que é um campo importante
+    drawdown: float = Field(..., description="Maximum cumulative loss from a peak for that day.")
 
     model_config = ConfigDict(from_attributes=True) 
 
@@ -73,13 +74,11 @@ class BacktestResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True) 
 
 # =======================================================
-# 3. Listing Schemas (GET / Detailed Result)
+# 3. Listing Schemas (GET /backtests)
 # =======================================================
 
 class BacktestListItem(BaseModel):
-
     """Schema for an individual item in the list of backtests (Requirement 19)."""
-
     id: int
     created_at: datetime
     ticker: str
@@ -87,18 +86,14 @@ class BacktestListItem(BaseModel):
     end_date: date
     strategy_type: str
     status: str
-    total_return: Optional[float] = Field(None, description="Final total return of the backtest, if completed.")
+    # NOVO: Incluir total_return e max_drawdown para melhor resumo na lista
+    total_return: Optional[float] = Field(None, description="Final total return of the backtest.")
+    max_drawdown: Optional[float] = Field(None, description="Maximum cumulative loss (Drawdown) for the backtest.")
 
     model_config = ConfigDict(from_attributes=True) 
 
-
-# =======================================================
-# 3. Listing Schemas (GET / Listing)
-# =======================================================
 class BacktestListResponse(BaseModel):
-
     """Schema for the paginated response of the backtest list endpoint (Requirement 19)."""
-
     total: int = Field(..., description="Total number of backtests found across all pages.")
     page: int = Field(..., description="Current page number.")
     size: int = Field(..., description="Page size used.")
