@@ -1,3 +1,5 @@
+# trading_api/modules/data_sourcing/services.py
+
 # Python and Library Imports
 import yfinance as yf
 from datetime import date, timedelta
@@ -11,10 +13,10 @@ import logging
 # Project Imports
 from trading_api.database.models.market_data import Symbol, Price, Indicator
 from trading_api.database.models.system import JobRun
-# Import configuration schema from router module
+# Import configuration schema used for input validation
 from trading_api.modules.data_sourcing.schemas import IndicatorUpdateConfig 
 
-# Basic logging configuration for job tracking
+# Basic logging configuration for job monitoring
 logger = logging.getLogger(__name__)
 # Set log level to INFO by default
 logger.setLevel(logging.INFO) 
@@ -51,7 +53,7 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
     # Extract tickers from configuration
     tickers = config.tickers
     
-    # Create initial job record in the database
+    # Create and commit the initial job record (JobRun)
     job_run = JobRun(
         job_name="historical_data_ingestion",
         status="PENDING",
@@ -59,7 +61,7 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
     )
     db.add(job_run)
     # Commit immediately to ensure job start is recorded
-    db.commit()
+    db.commit() 
     db.refresh(job_run)
 
     try:
@@ -75,14 +77,21 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
             logger.info(f"Processing ticker: {ticker_symbol}")
             
             try:
-                # 1. Get ticker info and find/create the symbol in the database (Requirement 50)
+                # 1. Get ticker info
                 ticker_info = yf.Ticker(ticker_symbol)
                 info = ticker_info.info
 
+                # CORRECTION: Validate if Yahoo Finance returned valid market information.
+                # If 'regularMarketPrice' is missing, the ticker is invalid or not tradable.
+                if not info or info.get('regularMarketPrice') is None:
+                    logger.warning(f"Ticker {ticker_symbol} is invalid or has no current market data. Skipping creation and ingestion.")
+                    continue
+
+                # Find or Create Symbol Record (Requirement 50)
                 db_symbol = db.query(Symbol).filter(Symbol.ticker == ticker_symbol).first()
 
                 if not db_symbol:
-                    # Create symbol record if it doesn't exist
+                    # Create symbol record only if info is valid
                     db_symbol = Symbol(
                         ticker=ticker_symbol,
                         name=info.get('longName', ticker_symbol),
@@ -98,7 +107,7 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
                 hist_data = ticker_info.history(start=start_date, end=end_date)
                 
                 if hist_data.empty:
-                    logger.warning(f"No historical data found for {ticker_symbol}. Skipping persistence.")
+                    logger.warning(f"No historical data found for {ticker_symbol}. Skipping price/indicator persistence.")
                     continue
 
                 # 3. Calculate Indicators
@@ -109,15 +118,15 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
 
 
                 # ===========================================================
-                # BATCH FILTERING AND PERSISTENCE (Solving UniqueViolation)
+                # BATCH FILTERING AND PERSISTENCE (Idempotence Logic)
                 # ===========================================================
                 
-                # --- A. Filter Existing Prices ---
+                # --- A. Filter Existing Prices to Avoid UniqueViolation ---
                 # Retrieve all existing dates for this symbol ID
                 existing_prices = db.query(Price.date).filter(Price.symbol_id == db_symbol.id).all()
                 existing_dates_set = {p.date for p in existing_prices} 
                 
-                # Convert the DataFrame index dates (datetime.date objects) into a Pandas Series
+                # Convert the DataFrame index dates into a Pandas Series
                 hist_dates_series = pd.Series(hist_data.index.normalize().date)
                 
                 # Create a boolean mask for NEW dates (where date is NOT in the existing set)
@@ -130,7 +139,7 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
                     logger.info(f"No new price data found for {ticker_symbol}. Skipping persistence.")
                     continue
                     
-                # --- B. Build Lists of Objects for BULK INSERT ---
+                # --- B. Build Lists of ORM Objects ---
                 current_prices = []
                 new_indicators = []
 
@@ -154,9 +163,7 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
                         # Persist Indicators (Requirement 52)
                         if config.calculate_indicators:
                             indicators_to_save = [
-                                ('SMA', 'SMA_50', 50), 
-                                ('SMA', 'SMA_200', 200), 
-                                ('ATR', 'ATR_14', 14),
+                                ('SMA', 'SMA_50', 50), ('SMA', 'SMA_200', 200), ('ATR', 'ATR_14', 14),
                             ]
                             
                             for name, col_name, length in indicators_to_save:
@@ -174,27 +181,24 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
                 
                 # --- C. Bulk Save (Final Step for the Ticker) ---
                 if current_prices:
-
-                    # Bulk save new price records
+                    # Bulk save new price records (High performance insert)
                     db.bulk_save_objects(current_prices)
                     logger.info(f"Bulk saved {len(current_prices)} NEW price records for {ticker_symbol}.")
 
                 if new_indicators:
-
                     # Bulk save new indicator records
                     db.bulk_save_objects(new_indicators)
                     logger.info(f"Bulk saved {len(new_indicators)} NEW indicator records for {ticker_symbol}.")
 
 
             except Exception as e:
-
                 logger.error(f"Error processing ticker {ticker_symbol}: {e}", exc_info=True)
 
                 # Rollback current changes for this ticker and proceed to the next
                 db.rollback() 
                 continue
 
-        # 6. Finalization: Commit JobRun Status
+        # 6. Finalization: Update JobRun Status to SUCCESS
         job_run.status = "SUCCESS"
         job_run.message = "Historical data and indicator calculation completed successfully."
         db.commit()
@@ -202,11 +206,10 @@ def ingest_and_update_market_data(db: Session, config: IndicatorUpdateConfig):
         return {"status": "success", "message": "Data ingestion and indicator calculation complete."}
 
     except Exception as e:
-
-        # Capture unexpected critical errors (e.g., DB connection failure)
+        # Capture unexpected critical errors (e.g., global DB failure)
         logger.critical(f"An unexpected critical error occurred: {e}", exc_info=True)
         db.rollback()
         job_run.status = "FAILURE"
         job_run.message = f"An unexpected critical error occurred: {str(e)}"
         db.commit()
-        return {"status": "error", "message": job_run.message}
+        return {"status": "error", "message": "Data ingestion failed due to critical error."}
