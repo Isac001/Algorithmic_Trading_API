@@ -1,4 +1,16 @@
-# Ignore these files
+# Python Bytecode e Cache
+#########################
 
+# Ignora todos os diretórios __pycache__/ em qualquer nível de profundidade
+__pycache__/
+.pytest_cache
+
+
+# Ignora todos os arquivos de bytecode (.pyc) em qualquer diretório
+*.pyc
+
+# Ignorar ambientes virtuais
+venv/
+
+# Ignorar variáveis de ambiente (Segurança)
 .env
-*/venv

@@ -1,5 +1,7 @@
+
 # Service definitions for Docker Compose
 services:
+
   # 1. PostgreSQL Database Service
   db:
     image: postgres:15-alpine
@@ -26,13 +28,16 @@ services:
 
   # 2. FastAPI Application Service (API Front-end)
   app:
+
     # Builds the image from the Dockerfile in the current directory.
     build: .
     container_name: trading_api
+
     # Defines the image name for the build result.
     image: ${COMPOSE_PROJECT_NAME:-trading_api}_app
     ports:
       - "8000:8000"
+
     # Loads environment variables (e.g., database credentials for Alembic/FastAPI).
     env_file:
       - .env
@@ -49,14 +54,19 @@ services:
     # Command: Runs Alembic migrations first, then starts Uvicorn.
     command: >
       /bin/sh -c "alembic upgrade head &&
-      uvicorn trading_api.main:app --host 0.0.0.0 --port 8000"
+      uvicorn trading_api.main:app --host 0.0.0.0 --port 8000 --reload"
       
-    # Mounts local code for development (live-reloading).
+    # Mounts only necessary directories for development
     volumes:
       - ./trading_api:/app/trading_api
+      - ./tests:/app/tests
+      - ./alembic.ini:/app/alembic.ini
+      - ./requirements.txt:/app/requirements.txt
+     
 
   # 3. Daily Worker Service (Cron Job Simulation - Requirement 59)
   daily_worker:
+
     # Uses the same image built by the 'app' service for consistency.
     image: ${COMPOSE_PROJECT_NAME:-trading_api}_app
     container_name: daily_indicator_worker
@@ -84,9 +94,32 @@ services:
         sleep 86400; 
       done"
       
-    # Mounts code volume to access project files like worker.py.
+    # Mounts only necessary directories
     volumes:
       - ./trading_api:/app/trading_api
+      - ./tests:/app/tests
+
+  # 4. Test Service (Optional - for running tests inside container)
+  tests:
+    image: ${COMPOSE_PROJECT_NAME:-trading_api}_app
+    container_name: trading_api_tests
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    volumes:
+      - ./trading_api:/app/trading_api
+      - ./tests:/app/tests
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./requirements.txt:/app/requirements.txt
+
+    # Run tests (comment out for interactive shell)
+    command: >
+      /bin/sh -c "pytest tests/ -v"
 
 # Declare the named volume for persistent database storage.
 volumes:
