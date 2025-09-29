@@ -288,72 +288,11 @@ class BacktestingService:
             logger.error(f"[{backtest_id}] Error in results persistence: {e}", exc_info=True)
             raise
 
-    # Method to save trades using multiple capture methods
-    def _save_trades_comprehensive(self, strategy_instance, backtest_id: int, db: Session, trade_analyzer) -> int:
-
-        """
-        Persist trade records using multiple data capture methods for reliability.
-        Implements fallback mechanisms to ensure no trades are lost.
-        
-        Args:
-            strategy_instance: Strategy instance containing trade data
-            backtest_id: Identifier for trade-backtest relationship
-            db: Database session for persistence
-            trade_analyzer: Backtrader trade analyzer results
-            
-        Returns:
-            int: Number of trades successfully persisted
-        """
-
-        trades_to_save = []
-        
-        # Primary method: Use strategy's internal trade tracking (most reliable)
-        strategy_trades = getattr(strategy_instance, 'trades_list', [])
-        logger.info(f"[{backtest_id}] Found {len(strategy_trades)} trades in strategy trades_list")
-        
-        for trade_data in strategy_trades:
-            try:
-                if self._validate_trade_data(trade_data):
-                    trade = Trade(
-                        backtest_id=backtest_id,
-                        date=trade_data.get('exit_date', datetime.now()),
-                        side=trade_data.get('side', 'BUY'),
-                        price=float(trade_data.get('exit_price', 0)),
-                        size=float(trade_data.get('size', 0)),
-                        commission=float(trade_data.get('total_commission', 0)),
-                        pnl=float(trade_data.get('pnl_net', 0))
-                    )
-                    trades_to_save.append(trade)
-            except Exception as e:
-                logger.warning(f"[{backtest_id}] Invalid trade in strategy_list: {e}")
-
-        # Fallback method: Extract trades from Backtrader's TradeAnalyzer
-        if not trades_to_save:
-            logger.info(f"[{backtest_id}] Using TradeAnalyzer fallback")
-            trades_to_save.extend(self._extract_trades_from_analyzer(trade_analyzer, backtest_id))
-
-        # Last resort: Attempt trade reconstruction from transaction records
-        if not trades_to_save:
-            logger.info(f"[{backtest_id}] Attempting transaction reconstruction")
-            transactions_analyzer = getattr(strategy_instance.analyzers, 'transactions', None)
-            if transactions_analyzer:
-                transactions_data = transactions_analyzer.get_analysis()
-                trades_to_save.extend(self._reconstruct_trades_from_transactions(transactions_data, backtest_id))
-
-        # Bulk persist valid trades to database
-        if trades_to_save:
-            db.add_all(trades_to_save)
-            logger.info(f"[{backtest_id}] Successfully saved {len(trades_to_save)} trades to database")
-            return len(trades_to_save)
-        else:
-            logger.warning(f"[{backtest_id}] No valid trades found to persist")
-            return 0
-
     # Method to validate trade data before persistence
     def _validate_trade_data(self, trade_data: Dict) -> bool:
 
         """
-        Validate trade data integrity before database persistence.
+        Validate trade data with support for both entry and exit formats.
         Ensures all required fields are present and contain valid values.
         
         Args:
@@ -363,9 +302,8 @@ class BacktestingService:
             bool: True if trade data passes all validation checks
         """
 
-        required_fields = ['exit_date', 'exit_price', 'size', 'side']
-        
-        # Check presence of all required fields
+        # Check basic required fields
+        required_fields = ['size', 'side']
         for field in required_fields:
             if field not in trade_data or trade_data[field] is None:
                 return False
@@ -373,10 +311,110 @@ class BacktestingService:
         # Validate numerical values for logical consistency
         if trade_data['size'] <= 0:
             return False
-            
-        if trade_data['exit_price'] <= 0:
+        
+        # For closed trades, we need exit information
+        if trade_data.get('status') == 'CLOSED':
+            if 'exit_date' not in trade_data or 'exit_price' not in trade_data:
+                return False
+            if trade_data['exit_price'] <= 0:
+                return False
+        # For open trades, we need entry information  
+        elif trade_data.get('status') == 'OPEN':
+            if 'entry_date' not in trade_data or 'entry_price' not in trade_data:
+                return False
+            if trade_data['entry_price'] <= 0:
+                return False
+        
+        return True
+
+    # Method to save trades using multiple capture methods
+    def _save_trades_comprehensive(self, strategy_instance, backtest_id: int, db: Session, trade_analyzer) -> int:
+        """
+        Persist trade records with improved validation and error handling.
+        """
+        trades_to_save = []
+        
+        # Primary method: Use strategy's internal trade tracking
+        strategy_trades = getattr(strategy_instance, 'trades_list', [])
+        logger.info(f"[{backtest_id}] Found {len(strategy_trades)} trades in strategy trades_list")
+        
+        # Debug logging
+        logger.info(f"[{backtest_id}] DEBUG - Trades list sample: {strategy_trades[:2] if strategy_trades else 'Empty'}")
+        
+        for trade_data in strategy_trades:
+            try:
+                if self._validate_trade_data(trade_data):
+                    # Use exit_date for closed trades, entry_date for open trades
+                    trade_date = trade_data.get('exit_date') or trade_data.get('entry_date')
+                    
+                    # For closed trades, use exit price; for open trades, use entry price
+                    if trade_data.get('status') == 'CLOSED':
+                        price = trade_data.get('exit_price')
+                        pnl = trade_data.get('pnl_net', 0)
+                    else:
+                        price = trade_data.get('entry_price') 
+                        pnl = 0.0
+                    
+                    trade = Trade(
+                        backtest_id=backtest_id,
+                        date=trade_date,
+                        side=trade_data.get('side', 'BUY'),
+                        price=float(price),
+                        size=float(trade_data.get('size', 0)),
+                        commission=float(trade_data.get('total_commission', 0)),
+                        pnl=float(pnl)
+                    )
+                    trades_to_save.append(trade)
+                    logger.info(f"[{backtest_id}] Valid trade added: {trade_data.get('trade_id', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"[{backtest_id}] Invalid trade in strategy_list: {e} - Data: {trade_data}")
+
+        # Fallback method: Extract trades from Backtrader's TradeAnalyzer
+        if not trades_to_save:
+            logger.info(f"[{backtest_id}] Using TradeAnalyzer fallback")
+            analyzer_trades = self._extract_trades_from_analyzer(trade_analyzer, backtest_id)
+            trades_to_save.extend(analyzer_trades)
+            logger.info(f"[{backtest_id}] TradeAnalyzer found {len(analyzer_trades)} trades")
+
+        # Bulk persist valid trades to database
+        if trades_to_save:
+            db.add_all(trades_to_save)
+            db.flush()  # Ensure trades are persisted
+            logger.info(f"[{backtest_id}] Successfully saved {len(trades_to_save)} trades to database")
+            return len(trades_to_save)
+        else:
+            logger.warning(f"[{backtest_id}] No valid trades found to persist")
+            return 0
+
+    def _validate_trade_data(self, trade_data: Dict) -> bool:
+        """
+        Validate trade data with support for both entry and exit formats.
+        """
+        # Check basic required fields
+        required_fields = ['size', 'side']
+        for field in required_fields:
+            if field not in trade_data or trade_data[field] is None:
+                return False
+        
+        # Validate numerical values
+        if trade_data['size'] <= 0:
             return False
-            
+        
+        # For closed trades, we need exit information
+        if trade_data.get('status') == 'CLOSED':
+            if 'exit_date' not in trade_data or 'exit_price' not in trade_data:
+                return False
+            if trade_data['exit_price'] <= 0:
+                return False
+            if 'entry_price' not in trade_data:
+                return False
+        # For open trades, we need entry information  
+        elif trade_data.get('status') == 'OPEN':
+            if 'entry_date' not in trade_data or 'entry_price' not in trade_data:
+                return False
+            if trade_data['entry_price'] <= 0:
+                return False
+        
         return True
 
     # Method to extract trades from Backtrader's TradeAnalyzer
@@ -539,25 +577,14 @@ class BacktestingService:
 
     # Method to retrieve paginated list of backtests
     def list_backtests(self, db: Session, ticker: Optional[str] = None, 
-                      strategy_type: Optional[str] = None, status: Optional[str] = None,
-                      page: int = 1, size: int = 10) -> Dict[str, Any]:
-        
+                  strategy_type: Optional[str] = None, status: Optional[str] = None,
+                  page: int = 1, size: int = 10) -> Dict[str, Any]:
+    
         """
         Retrieve paginated list of backtests with filtering options.
         Includes performance metrics for each backtest in results.
-        
-        Args:
-            db: Database session for query execution
-            ticker: Filter by stock ticker symbol
-            strategy_type: Filter by trading strategy type
-            status: Filter by backtest execution status
-            page: Page number for pagination (1-based)
-            size: Number of items per page
-            
-        Returns:
-            Dict[str, Any]: Paginated response with backtest list and metadata
         """
-
+        
         query = db.query(Backtest).options(joinedload(Backtest.metrics))
 
         # Apply optional filters for targeted results
@@ -581,9 +608,12 @@ class BacktestingService:
         for backtest in backtests:
             item_data = BacktestListItem.model_validate(backtest).model_dump()
             
-            # Include error details for failed backtests
-            if backtest.status == "FAILED" and backtest.error_message:
-                item_data['error_message'] = backtest.error_message
+            # CORREÇÃO: Remover a verificação de error_message ou usar getattr
+            if backtest.status == "FAILED":
+                # Use getattr para evitar AttributeError se o campo não existir
+                error_msg = getattr(backtest, 'error_message', None)
+                if error_msg:
+                    item_data['error_message'] = error_msg
             
             # Include performance metric for completed backtests
             if backtest.metrics and backtest.metrics.total_return is not None:
