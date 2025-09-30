@@ -16,7 +16,6 @@ from trading_api.database.session import get_db
 
 # --- Router Configuration ---
 router = APIRouter(
-    prefix="/backtests",
     tags=["Backtests"],
 )
 
@@ -62,16 +61,20 @@ def run_backtest(
 # Endpoint 2: List Backtests (With Pagination and Filters)
 # ----------------------------------------------------
 @router.get(
+        
     "", # Root path: /backtests
     response_model=BacktestListResponse,
     summary="Lists backtests with pagination and filters."
 )
 def list_backtests(
+
     db: Session = Depends(get_db),
+
     # Filter parameters for the query string
     ticker: Optional[str] = Query(None, description="Filter by asset ticker."),
     strategy_type: Optional[str] = Query(None, description="Filter by strategy type."),
     status: Optional[str] = Query(None, description="Filter by status (PENDING, COMPLETED, FAILED)."),
+    
     # Pagination parameters
     page: int = Query(1, ge=1, description="Page number (starts at 1)."),
     size: int = Query(10, ge=1, le=100, description="Page size (max. 100).")

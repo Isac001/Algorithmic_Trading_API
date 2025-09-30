@@ -159,6 +159,40 @@ class BacktestingService:
             db.commit()
             logger.info(f"[{backtest_id}] Backtest COMPLETED successfully")
 
+        except ValueError as e:
+            # CORREÇÃO: Tratamento específico para "Ticker not found"
+            error_message = str(e)
+            if "Ticker" in error_message and "not found" in error_message:
+                logger.error(f"[{backtest_id}] Ticker not found error: {error_message}")
+                db.rollback()
+                
+                # Update backtest status to failed with specific error message
+                if backtest_record:
+                    try:
+                        backtest_record.status = "FAILED"
+                        # Armazena a mensagem de erro específica
+                        backtest_record.error_message = f"Ticker '{backtest_record.ticker}' not found in database"
+                        db.commit()
+                    except Exception as save_err:
+                        logger.error(f"[{backtest_id}] Failed to save error status: {save_err}")
+                
+                # Não relança a exceção para evitar logs duplicados
+                return
+            else:
+                # Para outros ValueErrors, mantém o comportamento original
+                logger.error(f"[{backtest_id}] Backtest FAILED: {error_message}", exc_info=True)
+                db.rollback()
+                
+                if backtest_record:
+                    try:
+                        backtest_record.status = "FAILED"
+                        backtest_record.error_message = error_message
+                        db.commit()
+                    except Exception as save_err:
+                        logger.error(f"[{backtest_id}] Failed to save error status: {save_err}")
+                
+                raise e
+
         except Exception as e:
             logger.error(f"[{backtest_id}] Backtest FAILED: {e}", exc_info=True)
             db.rollback()
@@ -167,6 +201,7 @@ class BacktestingService:
             if backtest_record:
                 try:
                     backtest_record.status = "FAILED"
+                    backtest_record.error_message = str(e)
                     db.commit()
                 except Exception as save_err:
                     logger.error(f"[{backtest_id}] Failed to save error status: {save_err}")
