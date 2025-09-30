@@ -1,16 +1,18 @@
-# Python Bytecode e Cache
-#########################
+# Python Bytecode and Cache Files
+#################################
 
-# Ignora todos os diretórios __pycache__/ em qualquer nível de profundidade
+# Ignore all bytecode cache directories (__pycache__/) at any depth
 __pycache__/
-.pytest_cache
 
-
-# Ignora todos os arquivos de bytecode (.pyc) em qualquer diretório
+# Ignore specific bytecode files
 *.pyc
 
-# Ignorar ambientes virtuais
-venv/
+# Ignore Pytest cache directory
+.pytest_cache/
 
-# Ignorar variáveis de ambiente (Segurança)
+# Ignore Virtual Environments
+venv/
+.venv/
+
+# Ignore local environment variables (Security Requirement)
 .env
